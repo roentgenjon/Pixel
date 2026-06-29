@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel Canvas – 1 000 000 Pixel</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0e0e0e;
+  overflow: hidden;
+  font-family: system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#wrap {
+  position: fixed;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+#canvas { position: absolute; top: 0; left: 0; }
+
+/* ── Toolbar ─────────────────────────────────────────────────── */
+#bar {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: #1e1e1e;
+  border: 1px solid #2e2e2e;
+  border-radius: 12px;
+  padding: 6px 10px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.6);
+  z-index: 20;
+}
+
+.sep { width: 1px; height: 22px; background: #333; margin: 0 2px; }
+
+.btn {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: #2a2a2a;
+  color: #ccc;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: background .12s, color .12s;
+  flex-shrink: 0;
+}
+.btn:hover   { background: #383838; color: #fff; }
+.btn.active  { background: #3d6eff; color: #fff; }
+.btn-sym     { font-size: 20px; font-weight: 700; line-height: 1; }
+
+#zoom-label {
+  color: #666;
+  font-size: 11px;
+  min-width: 46px;
+  text-align: center;
+  font-family: monospace;
+}
+
+#user-count { color: #666; font-size: 12px; padding: 0 4px; }
+
+/* ── Color picker panel ──────────────────────────────────────── */
+#picker-panel {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  background: #1e1e1e;
+  border: 1px solid #2e2e2e;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 4px 28px rgba(0,0,0,.7);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 20;
+}
+
+#picker-canvas { display: block; cursor: crosshair; }
+
+#picker-bottom {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#color-swatch {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 2px solid #3a3a3a;
+  flex-shrink: 0;
+  background: #ff0000;
+}
+
+#hex-input {
+  flex: 1;
+  background: #141414;
+  color: #ddd;
+  border: 1px solid #3a3a3a;
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-family: monospace;
+  font-size: 13px;
+}
+#hex-input:focus { outline: none; border-color: #3d6eff; }
+
+/* ── Coordinate HUD ──────────────────────────────────────────── */
+#coords {
+  position: fixed;
+  bottom: 18px;
+  left: 18px;
+  color: #444;
+  font-size: 11px;
+  font-family: monospace;
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* ── Help hint ───────────────────────────────────────────────── */
+#hint {
+  position: fixed;
+  top: 14px;
+  left: 18px;
+  color: #333;
+  font-size: 10px;
+  line-height: 1.6;
+  pointer-events: none;
+  z-index: 20;
+}
+</style>
+</head>
+<body>
+
+<div id="wrap"><canvas id="canvas"></canvas></div>
+
+<div id="bar">
+  <button class="btn active" id="btn-paint" title="Malen  [P]">✏️</button>
+  <button class="btn"        id="btn-erase" title="Radieren – nur eigene Pixel  [E]">🧹</button>
+  <button class="btn"        id="btn-eye"   title="Farbpipette  [I]">💧</button>
+  <div class="sep"></div>
+  <button class="btn btn-sym" id="btn-zi"  title="Zoom +  [+]">+</button>
+  <span id="zoom-label">100%</span>
+  <button class="btn btn-sym" id="btn-zo"  title="Zoom −  [−]">−</button>
+  <button class="btn"         id="btn-fit" title="Alles anzeigen  [F]">⊡</button>
+  <div class="sep"></div>
+  <span id="user-count">👥 …</span>
+</div>
+
+<div id="picker-panel">
+  <canvas id="picker-canvas" width="214" height="214"></canvas>
+  <div id="picker-bottom">
+    <div id="color-swatch"></div>
+    <input type="text" id="hex-input" maxlength="7" placeholder="#ff0000" autocomplete="off" spellcheck="false">
+  </div>
+</div>
+
+<div id="coords"></div>
+
+<div id="hint">
+  Mittelmaustaste / Leertaste+Ziehen = Schwenken<br>
+  Mausrad = Zoom &nbsp;·&nbsp; Rechtsklick = Eigenes Pixel löschen
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
