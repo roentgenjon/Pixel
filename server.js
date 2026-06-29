@@ -86,18 +86,35 @@ function broadcastJSON(obj) {
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 
+// Optional password protection — set PIXEL_PASSWORD env variable to enable.
+// If not set, the canvas is open to everyone.
+const REQUIRED_PASSWORD = process.env.PIXEL_PASSWORD || null;
+
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws) => {
   ws.on('error', () => ws.terminate());
 
+  // Kill connection if no hello arrives within 10 s
+  const authTimer = setTimeout(() => {
+    if (!clients.has(ws)) ws.terminate();
+  }, 10_000);
+
   ws.on('message', (raw, isBinary) => {
     if (!isBinary) {
-      // JSON handshake: {type:'hello', userId:'...'}
+      // JSON handshake: {type:'hello', userId:'...', password:'...'}
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
 
       if (msg.type === 'hello') {
+        // Password check
+        if (REQUIRED_PASSWORD && msg.password !== REQUIRED_PASSWORD) {
+          ws.send(JSON.stringify({ type: 'error', code: 'wrong_password' }));
+          ws.terminate();
+          return;
+        }
+
+        clearTimeout(authTimer);
         const candidate = msg.userId;
         const userId = (typeof candidate === 'string' && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/.test(candidate))
           ? candidate

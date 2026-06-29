@@ -50,7 +50,8 @@ const ws = new WebSocket(wsUrl);
 ws.binaryType = 'arraybuffer';
 
 ws.addEventListener('open', () => {
-  ws.send(JSON.stringify({ type: 'hello', userId: myId }));
+  const password = sessionStorage.getItem('pixelPw') || '';
+  ws.send(JSON.stringify({ type: 'hello', userId: myId, password }));
 });
 
 ws.addEventListener('message', ({ data }) => {
@@ -59,8 +60,12 @@ ws.addEventListener('message', ({ data }) => {
     if (m.type === 'welcome') {
       myId = m.userId;
       localStorage.setItem('pixelId', myId);
+      hidePwOverlay();
     } else if (m.type === 'users') {
       document.getElementById('user-count').textContent = `👥 ${m.count}`;
+    } else if (m.type === 'error' && m.code === 'wrong_password') {
+      sessionStorage.removeItem('pixelPw');
+      showPwOverlay(true);
     }
     return;
   }
@@ -565,6 +570,81 @@ const picker = (() => {
 
   return { rgb, cssColor, setFromRGB };
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Password overlay
+// ═══════════════════════════════════════════════════════════════════════════════
+function buildPwOverlay() {
+  const el = document.createElement('div');
+  el.id = 'pw-overlay';
+  el.style.cssText = [
+    'position:fixed;inset:0;background:rgba(0,0,0,.85)',
+    'display:flex;align-items:center;justify-content:center',
+    'z-index:999;flex-direction:column;gap:12px',
+  ].join(';');
+
+  el.innerHTML = `
+    <div style="background:#1e1e1e;border:1px solid #333;border-radius:14px;
+                padding:32px 28px;display:flex;flex-direction:column;gap:14px;
+                min-width:280px;box-shadow:0 8px 40px rgba(0,0,0,.8)">
+      <div style="color:#ddd;font-size:16px;font-weight:600;text-align:center">
+        🔒 Pixel Canvas
+      </div>
+      <div id="pw-error" style="color:#ff6b6b;font-size:12px;text-align:center;display:none">
+        Falsches Passwort
+      </div>
+      <input id="pw-input" type="password" placeholder="Passwort"
+        style="background:#141414;color:#ddd;border:1px solid #444;border-radius:8px;
+               padding:10px 12px;font-size:14px;outline:none;width:100%">
+      <button id="pw-btn"
+        style="background:#3d6eff;color:#fff;border:none;border-radius:8px;
+               padding:10px;font-size:14px;cursor:pointer;font-weight:600">
+        Zugang
+      </button>
+    </div>`;
+
+  document.body.appendChild(el);
+
+  const input = el.querySelector('#pw-input');
+  const btn   = el.querySelector('#pw-btn');
+
+  function submit() {
+    const pw = input.value;
+    if (!pw) return;
+    sessionStorage.setItem('pixelPw', pw);
+    // Reconnect with the new password
+    ws.close();
+    location.reload();
+  }
+
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  input.focus();
+}
+
+function showPwOverlay(wrongPw = false) {
+  let el = document.getElementById('pw-overlay');
+  if (!el) buildPwOverlay();
+  el = document.getElementById('pw-overlay');
+  el.style.display = 'flex';
+  if (wrongPw) {
+    const err = el.querySelector('#pw-error');
+    if (err) err.style.display = 'block';
+    const inp = el.querySelector('#pw-input');
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+function hidePwOverlay() {
+  const el = document.getElementById('pw-overlay');
+  if (el) el.remove();
+}
+
+// Show password overlay immediately if a password is required but not yet stored.
+// The server will close the connection if the stored password is wrong.
+if (!sessionStorage.getItem('pixelPw') && window.PIXEL_REQUIRES_PASSWORD) {
+  buildPwOverlay();
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Bootstrap
