@@ -1,0 +1,16 @@
+name = "pixel-canvas"
+main = "worker/index.js"
+compatibility_date = "2024-01-01"
+account_id = "c4226f43b8ce6e4807c01155ea24a120"
+
+# Durable Object for real-time state + WebSocket broadcast
+[[durable_objects.bindings]]
+name = "CANVAS"
+class_name = "PixelCanvas"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["PixelCanvas"]
+
+[build]
+command = ""
