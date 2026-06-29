@@ -44,8 +44,9 @@ function flushAll() {
 // ═══════════════════════════════════════════════════════════════════════════════
 let myId = localStorage.getItem('pixelId') || null;
 
-const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const ws    = new WebSocket(`${proto}//${location.host}`);
+const wsUrl = window.PIXEL_WS_URL ||
+  `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
+const ws = new WebSocket(wsUrl);
 ws.binaryType = 'arraybuffer';
 
 ws.addEventListener('open', () => {
