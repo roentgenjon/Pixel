@@ -42,21 +42,20 @@ wrangler deploy   # deployt den Worker
 window.PIXEL_WS_URL = 'wss://pixel-canvas.roentgenjon.workers.dev';
 ```
 
-Commit und push auf den aktuellen Branch (`claude/pixel-canvas-collab-eb7vqi`,
-oder `main` sobald der Branch gemerged ist).
+Commit und push nach `main`.
 
 ## Schritt 3 – GitHub Pages aktivieren
 
 1. GitHub → Repository → **Settings → Pages**
 2. Source: **GitHub Actions**
 3. Fertig — `.github/workflows/pages.yml` deployt automatisch bei jedem Push
-   auf `main` **oder** auf `claude/pixel-canvas-collab-eb7vqi`. So funktioniert
-   der Deploy schon jetzt, ohne dass der Branch vorher nach `main` gemerged
-   werden muss. Sobald ein `main`-Branch existiert und der Code dorthin
-   gemerged ist, kann der Feature-Branch wieder aus dem Workflow-Trigger
-   entfernt werden.
+   auf `main`.
 4. Alternativ jederzeit manuell auslösen: **Actions → Deploy to GitHub Pages
    → Run workflow** (`workflow_dispatch`)
+
+Schritt 1 (Settings → Pages → Source) ist eine reine Web-UI-Einstellung ohne
+zugehörigen GitHub-API-Endpunkt in meinem Werkzeugsatz — die musst du einmalig
+selbst im Browser setzen.
 
 Die Seite ist dann erreichbar unter:
 `https://roentgenjon.github.io/Pixel/`
