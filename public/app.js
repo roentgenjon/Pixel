@@ -441,6 +441,94 @@ function zoomAt(mx, my, factor) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Touch events (mobile) — 1 finger paints/erases/picks, 2 fingers pan + pinch-zoom
+// ═══════════════════════════════════════════════════════════════════════════════
+let touchMode = null; // 'paint' | 'pan-zoom'
+let pinchStartDist = 0, pinchStartZoom = 1, pinchMidX = 0, pinchMidY = 0;
+
+function touchDist(t0, t1) {
+  return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+}
+function touchMid(t0, t1) {
+  return { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 };
+}
+
+wrap.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+
+  if (e.touches.length === 1) {
+    const t = e.touches[0];
+    const { px, py } = canvasToPx(t.clientX, t.clientY);
+    const idx = pxToIndex(px, py);
+
+    if (tool === 'eye') {
+      if (idx >= 0 && pxOwner[idx] !== 0) {
+        const i = idx << 2;
+        picker.setFromRGB(pxData[i], pxData[i+1], pxData[i+2]);
+      }
+      touchMode = null;
+      return;
+    }
+
+    touchMode = 'paint';
+    painting  = true;
+    lastPx = px; lastPy = py;
+    applyTool(px, py);
+
+  } else if (e.touches.length === 2) {
+    painting  = false;
+    touchMode = 'pan-zoom';
+    const [t0, t1] = e.touches;
+    pinchStartDist = touchDist(t0, t1);
+    pinchStartZoom = zoom;
+    const mid = touchMid(t0, t1);
+    pinchMidX = mid.x; pinchMidY = mid.y;
+    pvx0 = vx; pvy0 = vy;
+  }
+}, { passive: false });
+
+wrap.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+
+  if (touchMode === 'paint' && e.touches.length === 1) {
+    const t = e.touches[0];
+    const { px, py } = canvasToPx(t.clientX, t.clientY);
+
+    if (px >= 0 && py >= 0 && px < W && py < H) {
+      document.getElementById('coords').textContent = `x ${px}  y ${py}`;
+    }
+    if (px !== lastPx || py !== lastPy) {
+      const pts = bresenham(lastPx, lastPy, px, py);
+      for (const [x, y] of pts) applyTool(x, y);
+      lastPx = px; lastPy = py;
+    }
+
+  } else if (touchMode === 'pan-zoom' && e.touches.length === 2) {
+    const [t0, t1] = e.touches;
+    const dist = touchDist(t0, t1);
+    const mid  = touchMid(t0, t1);
+    const nz   = Math.max(0.05, Math.min(64, pinchStartZoom * (dist / pinchStartDist)));
+
+    vx = mid.x - (pinchMidX - pvx0) * (nz / pinchStartZoom);
+    vy = mid.y - (pinchMidY - pvy0) * (nz / pinchStartZoom);
+    zoom = nz;
+    scheduleRender();
+  }
+}, { passive: false });
+
+function touchEnd(e) {
+  if (e.touches.length === 0) {
+    painting = false;
+    touchMode = null;
+  } else if (touchMode === 'pan-zoom' && e.touches.length === 1) {
+    // Dropped to one finger after a pinch — stop panning/zooming, don't start painting
+    touchMode = null;
+  }
+}
+wrap.addEventListener('touchend', touchEnd);
+wrap.addEventListener('touchcancel', touchEnd);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Keyboard shortcuts
 // ═══════════════════════════════════════════════════════════════════════════════
 window.addEventListener('keydown', (e) => {
@@ -626,7 +714,9 @@ const picker = (() => {
 
   function getPos(e) {
     const r = pc.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    const p = e.touches && e.touches.length ? e.touches[0] :
+              e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e;
+    return { x: p.clientX - r.left, y: p.clientY - r.top };
   }
 
   function updateDrag(x, y) {
@@ -652,6 +742,22 @@ const picker = (() => {
   });
 
   window.addEventListener('mouseup', () => { drag = null; });
+
+  pc.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const { x, y } = getPos(e);
+    if      (inRing(x, y))   drag = 'ring';
+    else if (inSquare(x, y)) drag = 'square';
+    if (drag) updateDrag(x, y);
+  }, { passive: false });
+
+  window.addEventListener('touchmove', (e) => {
+    if (!drag) return;
+    e.preventDefault();
+    updateDrag(...Object.values(getPos(e)));
+  }, { passive: false });
+
+  window.addEventListener('touchend', () => { drag = null; });
 
   // Hex input
   document.getElementById('hex-input').addEventListener('change', (e) => {
