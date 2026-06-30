@@ -61,6 +61,7 @@ body {
 .btn:hover   { background: #383838; color: #fff; }
 .btn.active  { background: #3d6eff; color: #fff; }
 .btn-sym     { font-size: 20px; font-weight: 700; line-height: 1; }
+.btn-brush   { font-size: 13px; font-weight: 600; font-family: monospace; }
 
 #zoom-label {
   color: #666;
@@ -151,6 +152,10 @@ body {
   <button class="btn"        id="btn-erase" title="Radieren – nur eigene Pixel  [E]">🧹</button>
   <button class="btn"        id="btn-eye"   title="Farbpipette  [I]">💧</button>
   <div class="sep"></div>
+  <button class="btn btn-brush active" id="btn-brush-1" title="Pinselgröße 1px  [1]">1</button>
+  <button class="btn btn-brush"        id="btn-brush-4" title="Pinselgröße 4px  [2]">4</button>
+  <button class="btn btn-brush"        id="btn-brush-8" title="Pinselgröße 8px  [3]">8</button>
+  <div class="sep"></div>
   <button class="btn btn-sym" id="btn-zi"  title="Zoom +  [+]">+</button>
   <span id="zoom-label">100%</span>
   <button class="btn btn-sym" id="btn-zo"  title="Zoom −  [−]">−</button>
@@ -174,7 +179,7 @@ body {
 <div id="hint">
   Mittelmaustaste / Leertaste+Ziehen = Schwenken<br>
   Mausrad = Zoom &nbsp;·&nbsp; Rechtsklick = Eigenes Pixel löschen<br>
-  G = Pixel-Raster ein/aus
+  G = Pixel-Raster ein/aus &nbsp;·&nbsp; 1/2/3 = Pinselgröße 1/4/8 px
 </div>
 
 <script src="config.js"></script>
