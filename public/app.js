@@ -256,24 +256,11 @@ function doRender() {
 
   ctx.clearRect(0, 0, cw, ch);
 
-  // Checkerboard background (shows where canvas ends).
-  // Clipped to the visible viewport, not the full virtual pw×ph area — at
-  // high zoom (up to 64x) that area can be tens of thousands of px wide,
-  // which would mean millions of fillRect calls per frame and freeze the tab.
-  const cs = 16;
+  // Background (shows where canvas ends), clipped to the visible viewport.
   const bx0 = Math.max(0, vx), bx1 = Math.min(cw, vx + pw);
   const by0 = Math.max(0, vy), by1 = Math.min(ch, vy + ph);
-  const colStart = Math.floor((bx0 - vx) / cs), colEnd = Math.ceil((bx1 - vx) / cs);
-  const rowStart = Math.floor((by0 - vy) / cs), rowEnd = Math.ceil((by1 - vy) / cs);
-  for (let row = rowStart; row < rowEnd; row++) {
-    for (let col = colStart; col < colEnd; col++) {
-      ctx.fillStyle = (row + col) % 2 === 0 ? '#1a1a1a' : '#242424';
-      ctx.fillRect(
-        vx + col * cs, vy + row * cs,
-        Math.min(cs, pw - col * cs), Math.min(cs, ph - row * cs)
-      );
-    }
-  }
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(bx0, by0, bx1 - bx0, by1 - by0);
 
   // Pixel data
   ctx.imageSmoothingEnabled = false;
@@ -282,7 +269,7 @@ function doRender() {
   // Pixel grid: always on at high zoom (subtle), or whenever the user toggled it on
   if (gridEnabled || zoom >= 6) {
     ctx.beginPath();
-    ctx.strokeStyle = gridEnabled ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.07)';
+    ctx.strokeStyle = gridEnabled ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.1)';
     ctx.lineWidth   = 0.5;
 
     const c0 = Math.max(0,  Math.ceil(-vx / zoom));
