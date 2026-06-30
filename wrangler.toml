@@ -10,7 +10,7 @@ class_name = "PixelCanvas"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["PixelCanvas"]
+new_sqlite_classes = ["PixelCanvas"]
 
 [build]
 command = ""
