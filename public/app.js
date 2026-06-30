@@ -50,8 +50,7 @@ const ws = new WebSocket(wsUrl);
 ws.binaryType = 'arraybuffer';
 
 ws.addEventListener('open', () => {
-  const password = sessionStorage.getItem('pixelPw') || '';
-  ws.send(JSON.stringify({ type: 'hello', userId: myId, password }));
+  ws.send(JSON.stringify({ type: 'hello', userId: myId }));
 });
 
 ws.addEventListener('message', ({ data }) => {
@@ -60,12 +59,8 @@ ws.addEventListener('message', ({ data }) => {
     if (m.type === 'welcome') {
       myId = m.userId;
       localStorage.setItem('pixelId', myId);
-      hidePwOverlay();
     } else if (m.type === 'users') {
       document.getElementById('user-count').textContent = `👥 ${m.count}`;
-    } else if (m.type === 'error' && m.code === 'wrong_password') {
-      sessionStorage.removeItem('pixelPw');
-      showPwOverlay(true);
     }
     return;
   }
@@ -74,7 +69,7 @@ ws.addEventListener('message', ({ data }) => {
   const t = v.getUint8(0);
 
   if (t === 0x00) {
-    // Full canvas init
+    // Full canvas init — authoritative server state, arrives on (re)connect
     const n = v.getUint32(1, true);
     for (let i = 0; i < n; i++) {
       const off = 5 + i * 8;
@@ -86,6 +81,7 @@ ws.addEventListener('message', ({ data }) => {
     }
     flushAll();
     scheduleRender();
+    reconcilePending();
 
   } else if (t === 0x01) {
     // Paint broadcast
@@ -94,6 +90,7 @@ ws.addEventListener('message', ({ data }) => {
     setPixel(idx, v.getUint8(5), v.getUint8(6), v.getUint8(7), isOwn);
     flushOne(idx);
     scheduleRender();
+    removePendingByIdx(idx);
 
   } else if (t === 0x02) {
     // Erase broadcast
@@ -101,6 +98,7 @@ ws.addEventListener('message', ({ data }) => {
     clearPixel(idx);
     flushOne(idx);
     scheduleRender();
+    removePendingByIdx(idx);
   }
 });
 
@@ -108,8 +106,7 @@ function wsSend(buf) {
   if (ws.readyState === WebSocket.OPEN) ws.send(buf);
 }
 
-function sendPaint(idx) {
-  const { r, g, b } = picker.rgb();
+function wsSendPaint(idx, r, g, b) {
   const buf = new ArrayBuffer(8);
   const v   = new DataView(buf);
   v.setUint8(0, 0x01);
@@ -118,12 +115,89 @@ function sendPaint(idx) {
   wsSend(buf);
 }
 
-function sendErase(idx) {
+function wsSendErase(idx) {
   const buf = new ArrayBuffer(5);
   const v   = new DataView(buf);
   v.setUint8(0, 0x02);
   v.setUint32(1, idx, true);
   wsSend(buf);
+}
+
+// ── Pending-writes cache ─────────────────────────────────────────────────────
+// The server only persists every 2 minutes (see worker/canvas.js). To survive a
+// reload during that window, every paint/erase is (a) applied locally right away
+// for instant feedback and (b) logged here until the server's next init packet
+// proves it actually landed. On reconnect, anything still unconfirmed is resent.
+const PENDING_KEY      = 'pixelPending';
+const FLUSH_MARGIN_MS  = 130_000; // server flush interval (120s) + safety margin
+
+function loadPending() {
+  try { return JSON.parse(localStorage.getItem(PENDING_KEY)) || []; }
+  catch { return []; }
+}
+function savePending() {
+  localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+}
+let pending = loadPending();
+
+// Re-apply any not-yet-confirmed local changes immediately on load, so a reload
+// during the server's un-flushed window doesn't show them as missing while we
+// wait for the WebSocket to (re)connect and send the authoritative init packet.
+for (const p of pending) {
+  if (p.type === 'paint') setPixel(p.idx, p.r, p.g, p.b, true);
+  else if (p.type === 'erase') clearPixel(p.idx);
+}
+flushAll();
+scheduleRender();
+
+function addPending(action) {
+  pending = pending.filter(p => p.idx !== action.idx);
+  pending.push({ ...action, t: Date.now() });
+  savePending();
+}
+
+function removePendingByIdx(idx) {
+  const before = pending.length;
+  pending = pending.filter(p => p.idx !== idx);
+  if (pending.length !== before) savePending();
+}
+
+function prunePending() {
+  const now = Date.now();
+  const before = pending.length;
+  pending = pending.filter(p => now - p.t < FLUSH_MARGIN_MS);
+  if (pending.length !== before) savePending();
+}
+setInterval(prunePending, 10_000);
+
+// Re-send anything the server's authoritative init state doesn't reflect yet —
+// covers a DO that hibernated/restarted before its alarm flushed our change.
+function reconcilePending() {
+  prunePending();
+  for (const p of pending) {
+    if (p.type === 'paint') {
+      if (pxOwner[p.idx] !== 1) wsSendPaint(p.idx, p.r, p.g, p.b);
+    } else if (p.type === 'erase') {
+      if (pxOwner[p.idx] !== 0) wsSendErase(p.idx);
+    }
+  }
+}
+
+function sendPaint(idx) {
+  const { r, g, b } = picker.rgb();
+  setPixel(idx, r, g, b, true);
+  flushOne(idx);
+  scheduleRender();
+  addPending({ type: 'paint', idx, r, g, b });
+  wsSendPaint(idx, r, g, b);
+}
+
+function sendErase(idx) {
+  clearPixel(idx);
+  flushOne(idx);
+  scheduleRender();
+  addPending({ type: 'erase', idx });
+  wsSendErase(idx);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -570,81 +644,6 @@ const picker = (() => {
 
   return { rgb, cssColor, setFromRGB };
 })();
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Password overlay
-// ═══════════════════════════════════════════════════════════════════════════════
-function buildPwOverlay() {
-  const el = document.createElement('div');
-  el.id = 'pw-overlay';
-  el.style.cssText = [
-    'position:fixed;inset:0;background:rgba(0,0,0,.85)',
-    'display:flex;align-items:center;justify-content:center',
-    'z-index:999;flex-direction:column;gap:12px',
-  ].join(';');
-
-  el.innerHTML = `
-    <div style="background:#1e1e1e;border:1px solid #333;border-radius:14px;
-                padding:32px 28px;display:flex;flex-direction:column;gap:14px;
-                min-width:280px;box-shadow:0 8px 40px rgba(0,0,0,.8)">
-      <div style="color:#ddd;font-size:16px;font-weight:600;text-align:center">
-        🔒 Pixel Canvas
-      </div>
-      <div id="pw-error" style="color:#ff6b6b;font-size:12px;text-align:center;display:none">
-        Falsches Passwort
-      </div>
-      <input id="pw-input" type="password" placeholder="Passwort"
-        style="background:#141414;color:#ddd;border:1px solid #444;border-radius:8px;
-               padding:10px 12px;font-size:14px;outline:none;width:100%">
-      <button id="pw-btn"
-        style="background:#3d6eff;color:#fff;border:none;border-radius:8px;
-               padding:10px;font-size:14px;cursor:pointer;font-weight:600">
-        Zugang
-      </button>
-    </div>`;
-
-  document.body.appendChild(el);
-
-  const input = el.querySelector('#pw-input');
-  const btn   = el.querySelector('#pw-btn');
-
-  function submit() {
-    const pw = input.value;
-    if (!pw) return;
-    sessionStorage.setItem('pixelPw', pw);
-    // Reconnect with the new password
-    ws.close();
-    location.reload();
-  }
-
-  btn.addEventListener('click', submit);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-  input.focus();
-}
-
-function showPwOverlay(wrongPw = false) {
-  let el = document.getElementById('pw-overlay');
-  if (!el) buildPwOverlay();
-  el = document.getElementById('pw-overlay');
-  el.style.display = 'flex';
-  if (wrongPw) {
-    const err = el.querySelector('#pw-error');
-    if (err) err.style.display = 'block';
-    const inp = el.querySelector('#pw-input');
-    if (inp) { inp.value = ''; inp.focus(); }
-  }
-}
-
-function hidePwOverlay() {
-  const el = document.getElementById('pw-overlay');
-  if (el) el.remove();
-}
-
-// Show password overlay immediately if a password is required but not yet stored.
-// The server will close the connection if the stored password is wrong.
-if (!sessionStorage.getItem('pixelPw') && window.PIXEL_REQUIRES_PASSWORD) {
-  buildPwOverlay();
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Bootstrap

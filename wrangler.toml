@@ -12,8 +12,5 @@ class_name = "PixelCanvas"
 tag = "v1"
 new_classes = ["PixelCanvas"]
 
-# Set your canvas password via:  wrangler secret put PIXEL_PASSWORD
-# Leave unset for an open (public) canvas.
-
 [build]
 command = ""

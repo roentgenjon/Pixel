@@ -2,14 +2,17 @@
  * PixelCanvas Durable Object
  *
  * Pixel state is kept in memory (sparse Map) and persisted via DO Alarms
- * at most once per minute — a single storage.put() call regardless of
- * how many pixels changed. This keeps writes well within the free tier
- * (≤ 44,640 writes/month at max alarm frequency vs. 1 M free).
+ * at most once every 2 minutes — a single batched storage.put() call
+ * regardless of how many pixels changed. Keeps writes far under the
+ * free tier (≤ 21,600 writes/month at max alarm frequency vs. 1 M free).
  *
- * Storage layout:
- *   Key "canvas"  →  ArrayBuffer:
- *     [count: 4 LE] + per pixel [index: 4 LE, r, g, b] + owner map
- *   Key "owners"  →  JSON { index: ownerId }
+ * Durable Objects can be evicted from memory (hibernated) between
+ * WebSocket messages to save compute cost. Two things must survive
+ * that eviction:
+ *   1. Which userId belongs to which open WebSocket  → stored via
+ *      ws.serializeAttachment() / state.getWebSockets(), not a plain Map.
+ *   2. Pixel state                                    → reloaded from
+ *      storage on first use after wake (ensureLoaded()).
  *
  * Binary WS protocol (same as Node.js server):
  *   Init  0x00 + count(4LE) + n×8 [index:4LE r g b isOwn]
@@ -21,21 +24,21 @@ const WIDTH  = 1000;
 const HEIGHT = 1000;
 const TOTAL  = WIDTH * HEIGHT;
 
-// Alarm fires every 60 s while there are unsaved changes.
-const FLUSH_INTERVAL_MS = 60_000;
+// Alarm fires every 2 minutes while there are unsaved changes.
+const FLUSH_INTERVAL_MS = 120_000;
 
-// Max DO storage value size is 128 KB.
-// 7 bytes per pixel (4-byte index + 3 RGB) → 128 KB / 7 ≈ 18,700 pixels/chunk.
-const PIXELS_PER_CHUNK = 18_000;
+// Max DO storage value size is 128 KiB (131,072 bytes).
+// 43 bytes per pixel (index + RGB + 36-byte ownerId) + 4-byte header →
+// 2,900 pixels/chunk ≈ 124,704 bytes, comfortably under the limit.
+const PIXELS_PER_CHUNK = 2_900;
 
 export class PixelCanvas {
   constructor(state, env) {
     this.state   = state;
     this.env     = env;
     this.pixels  = new Map();   // pixelIndex → {r, g, b, ownerId}
-    this.clients = new Map();   // WebSocket  → userId
     this.loaded  = false;
-    this.dirty   = false;       // any unsaved changes?
+    this.dirty   = false;       // any unsaved changes since last flush?
   }
 
   // ── Load from storage ─────────────────────────────────────────────────────────
@@ -44,7 +47,6 @@ export class PixelCanvas {
     if (this.loaded) return;
     this.loaded = true;
 
-    // Load all chunks
     const stored = await this.state.storage.list({ prefix: 'chunk:' });
     for (const [, buf] of stored) {
       this._deserializeChunk(buf);
@@ -62,24 +64,23 @@ export class PixelCanvas {
       const r       = u8[off + 4];
       const g       = u8[off + 5];
       const b       = u8[off + 6];
-      // ownerId stored as 36-char ASCII starting at off+7
-      const ownerId = String.fromCharCode(...u8.slice(off + 7, off + 43));
+      const ownerId = String.fromCharCode(...u8.slice(off + 7, off + 43)).replace(/\0+$/, '');
       this.pixels.set(idx, { r, g, b, ownerId });
       off += 43;
     }
   }
 
-  // ── Alarm-based persistence (at most 1 write/minute) ─────────────────────────
+  // ── Alarm-based persistence (at most 1 write batch / 2 min) ──────────────────
 
   markDirty() {
     if (!this.dirty) {
       this.dirty = true;
-      // Schedule alarm if not already set — DO alarm won't double-fire
       this.state.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
     }
   }
 
   async alarm() {
+    await this.ensureLoaded(); // pixels may be unset if DO restarted before this fired
     await this.flush();
   }
 
@@ -87,17 +88,16 @@ export class PixelCanvas {
     if (!this.dirty) return;
     this.dirty = false;
 
-    // Pack all pixels into fixed-size chunks (≤ 128 KB each)
     // Format per entry: index:4LE r:1 g:1 b:1 ownerId:36ASCII = 43 bytes
-    const entries = [...this.pixels.entries()];
+    const entries   = [...this.pixels.entries()];
     const numChunks = Math.ceil(entries.length / PIXELS_PER_CHUNK) || 1;
-    const puts = {};
+    const puts      = {};
 
     for (let c = 0; c < numChunks; c++) {
-      const slice  = entries.slice(c * PIXELS_PER_CHUNK, (c + 1) * PIXELS_PER_CHUNK);
-      const buf    = new ArrayBuffer(4 + slice.length * 43);
-      const view   = new DataView(buf);
-      const u8     = new Uint8Array(buf);
+      const slice = entries.slice(c * PIXELS_PER_CHUNK, (c + 1) * PIXELS_PER_CHUNK);
+      const buf   = new ArrayBuffer(4 + slice.length * 43);
+      const view  = new DataView(buf);
+      const u8    = new Uint8Array(buf);
       view.setUint32(0, slice.length, true);
       let off = 4;
       for (const [idx, p] of slice) {
@@ -105,7 +105,6 @@ export class PixelCanvas {
         u8[off + 4] = p.r;
         u8[off + 5] = p.g;
         u8[off + 6] = p.b;
-        // Pad or truncate ownerId to exactly 36 bytes
         const id = (p.ownerId || '').padEnd(36, '\0').slice(0, 36);
         for (let j = 0; j < 36; j++) u8[off + 7 + j] = id.charCodeAt(j);
         off += 43;
@@ -113,15 +112,14 @@ export class PixelCanvas {
       puts[`chunk:${c}`] = buf;
     }
 
-    // Delete any old chunks beyond current count (canvas shrank)
+    // Delete stale chunks beyond the current count (canvas shrank)
     const existing = await this.state.storage.list({ prefix: 'chunk:' });
     for (const key of existing.keys()) {
       const n = Number(key.replace('chunk:', ''));
       if (n >= numChunks) await this.state.storage.delete(key);
     }
 
-    // One batched put — counts as `numChunks` write units (≤ 56 for full canvas)
-    await this.state.storage.put(puts);
+    await this.state.storage.put(puts); // one batched call
   }
 
   // ── Incoming requests ─────────────────────────────────────────────────────────
@@ -143,31 +141,29 @@ export class PixelCanvas {
   }
 
   // ── WebSocket handlers ────────────────────────────────────────────────────────
+  // userId is attached directly to the WebSocket (survives hibernation) instead
+  // of a plain in-memory Map, which would be wiped on eviction.
 
   async webSocketMessage(ws, raw) {
-    const userId = this.clients.get(ws);
+    await this.ensureLoaded();
+
+    const attached = ws.deserializeAttachment();
+    const userId   = attached?.userId;
 
     if (typeof raw === 'string') {
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
 
       if (msg.type === 'hello') {
-        // Password check (env var PIXEL_PASSWORD)
-        if (this.env.PIXEL_PASSWORD && msg.password !== this.env.PIXEL_PASSWORD) {
-          ws.send(JSON.stringify({ type: 'error', code: 'wrong_password' }));
-          ws.close(1008, 'Unauthorized');
-          return;
-        }
-
         const candidate = msg.userId;
         const uid = (typeof candidate === 'string' && /^[\da-f-]{36}$/.test(candidate))
           ? candidate
           : crypto.randomUUID();
 
-        this.clients.set(ws, uid);
+        ws.serializeAttachment({ userId: uid });
         ws.send(JSON.stringify({ type: 'welcome', userId: uid }));
         ws.send(this.buildInit(uid));
-        this.broadcastJSON({ type: 'users', count: this.clients.size });
+        this.broadcastJSON({ type: 'users', count: this.state.getWebSockets().length });
       }
       return;
     }
@@ -189,7 +185,8 @@ export class PixelCanvas {
       this.pixels.set(idx, { r, g, b, ownerId: userId });
       this.markDirty();
 
-      for (const [ws2, uid2] of this.clients) {
+      for (const ws2 of this.state.getWebSockets()) {
+        const uid2 = ws2.deserializeAttachment()?.userId;
         try { ws2.send(this.buildPaint(idx, r, g, b, uid2 === userId)); } catch {}
       }
 
@@ -204,19 +201,19 @@ export class PixelCanvas {
       this.markDirty();
 
       const pkt = this.buildErase(idx);
-      for (const [ws2] of this.clients) {
+      for (const ws2 of this.state.getWebSockets()) {
         try { ws2.send(pkt); } catch {}
       }
     }
   }
 
-  async webSocketClose(ws) {
-    this.clients.delete(ws);
-    this.broadcastJSON({ type: 'users', count: this.clients.size });
+  async webSocketClose() {
+    // state.getWebSockets() already excludes closed sockets — just broadcast new count
+    this.broadcastJSON({ type: 'users', count: this.state.getWebSockets().length });
   }
 
-  async webSocketError(ws) {
-    this.clients.delete(ws);
+  async webSocketError() {
+    this.broadcastJSON({ type: 'users', count: this.state.getWebSockets().length });
   }
 
   // ── Packet builders ───────────────────────────────────────────────────────────
@@ -257,7 +254,7 @@ export class PixelCanvas {
 
   broadcastJSON(obj) {
     const s = JSON.stringify(obj);
-    for (const [ws] of this.clients) {
+    for (const ws of this.state.getWebSockets()) {
       try { ws.send(s); } catch {}
     }
   }
