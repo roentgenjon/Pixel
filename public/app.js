@@ -315,6 +315,7 @@ let panning   = false;
 let spaceDown = false;
 let panX0 = 0, panY0 = 0, pvx0 = 0, pvy0 = 0;
 let lastPx = -1, lastPy = -1;
+let brushSize = 1; // 1 | 4 | 8 — side length of the square brush, in pixels
 
 function setTool(t) {
   tool = t;
@@ -324,22 +325,44 @@ function setTool(t) {
   updateCursor();
 }
 
+function setBrushSize(n) {
+  brushSize = n;
+  [1, 4, 8].forEach(s => {
+    document.getElementById(`btn-brush-${s}`).classList.toggle('active', s === n);
+  });
+}
+
+// ─── Brush footprint ─────────────────────────────────────────────────────────
+// Square block of brushSize × brushSize cells, roughly centered on (px, py).
+function brushCells(px, py) {
+  const offset = Math.floor((brushSize - 1) / 2);
+  const cells = [];
+  for (let dy = 0; dy < brushSize; dy++) {
+    for (let dx = 0; dx < brushSize; dx++) {
+      cells.push([px - offset + dx, py - offset + dy]);
+    }
+  }
+  return cells;
+}
+
 function updateCursor() {
   if (panning || spaceDown) wrap.style.cursor = 'grabbing';
   else                      wrap.style.cursor = 'crosshair';
 }
 
-// ─── Apply tool at pixel ─────────────────────────────────────────────────────
+// ─── Apply tool at pixel (covers the whole brush footprint) ──────────────────
 function applyTool(px, py) {
-  const idx = pxToIndex(px, py);
-  if (idx < 0) return;
+  for (const [x, y] of brushCells(px, py)) {
+    const idx = pxToIndex(x, y);
+    if (idx < 0) continue;
 
-  if (tool === 'paint') {
-    if (pxOwner[idx] === 2) return; // don't overwrite others
-    sendPaint(idx);
-  } else if (tool === 'erase') {
-    if (pxOwner[idx] !== 1) return; // only erase own
-    sendErase(idx);
+    if (tool === 'paint') {
+      if (pxOwner[idx] === 2) continue; // don't overwrite others
+      sendPaint(idx);
+    } else if (tool === 'erase') {
+      if (pxOwner[idx] !== 1) continue; // only erase own
+      sendErase(idx);
+    }
   }
 }
 
@@ -417,12 +440,14 @@ wrap.addEventListener('mousemove', (e) => {
 wrap.addEventListener('mouseup',    () => { painting = false; panning = false; updateCursor(); });
 wrap.addEventListener('mouseleave', () => { painting = false; panning = false; updateCursor(); });
 
-// Right-click = quick erase own pixel
+// Right-click = quick erase own pixel(s), respecting the current brush size
 wrap.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   const { px, py } = canvasToPx(e.clientX, e.clientY);
-  const idx = pxToIndex(px, py);
-  if (idx >= 0 && pxOwner[idx] === 1) sendErase(idx);
+  for (const [x, y] of brushCells(px, py)) {
+    const idx = pxToIndex(x, y);
+    if (idx >= 0 && pxOwner[idx] === 1) sendErase(idx);
+  }
 });
 
 // Scroll zoom
@@ -539,6 +564,9 @@ window.addEventListener('keydown', (e) => {
   if (k === 'p' || k === 'P') setTool('paint');
   if (k === 'e' || k === 'E') setTool('erase');
   if (k === 'i' || k === 'I') setTool('eye');
+  if (k === '1') setBrushSize(1);
+  if (k === '2') setBrushSize(4);
+  if (k === '3') setBrushSize(8);
   if (k === 'f' || k === 'F') { fitView(); scheduleRender(); }
   if (k === 'g' || k === 'G') {
     gridEnabled = !gridEnabled;
@@ -559,6 +587,9 @@ window.addEventListener('keyup', (e) => {
 document.getElementById('btn-paint').onclick = () => setTool('paint');
 document.getElementById('btn-erase').onclick = () => setTool('erase');
 document.getElementById('btn-eye').onclick   = () => setTool('eye');
+document.getElementById('btn-brush-1').onclick = () => setBrushSize(1);
+document.getElementById('btn-brush-4').onclick = () => setBrushSize(4);
+document.getElementById('btn-brush-8').onclick = () => setBrushSize(8);
 document.getElementById('btn-zi').onclick    = () => zoomAt(window.innerWidth/2, window.innerHeight/2, 1.5);
 document.getElementById('btn-zo').onclick    = () => zoomAt(window.innerWidth/2, window.innerHeight/2, 1/1.5);
 document.getElementById('btn-fit').onclick   = () => { fitView(); scheduleRender(); };
