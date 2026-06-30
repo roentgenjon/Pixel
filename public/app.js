@@ -5,6 +5,13 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 const W = 1000, H = 1000;
 
+// Declared up-front (not down near the render loop where it's conceptually
+// grouped) because scheduleRender() below is invoked synchronously by the
+// pending-writes-cache replay during initial script load — a `let` declared
+// later in the same scope would leave it in the temporal dead zone at that
+// point and throw, aborting the whole script before any UI listener attaches.
+let renderQueued = false;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Pixel data (client-side mirror)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -46,8 +53,19 @@ let myId = localStorage.getItem('pixelId') || null;
 
 const wsUrl = window.PIXEL_WS_URL ||
   `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
-const ws = new WebSocket(wsUrl);
-ws.binaryType = 'arraybuffer';
+
+// A malformed/empty URL (e.g. the page opened as a local file instead of via
+// a server) makes `new WebSocket()` throw *synchronously*, which would abort
+// this whole script before any UI listener below gets attached. Guard with a
+// no-op stub so a connection problem only means "offline", not "frozen UI".
+let ws;
+try {
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+} catch (err) {
+  console.error('WebSocket-Verbindung fehlgeschlagen:', err);
+  ws = { readyState: 3 /* CLOSED */, send() {}, addEventListener() {} };
+}
 
 ws.addEventListener('open', () => {
   ws.send(JSON.stringify({ type: 'hello', userId: myId }));
@@ -208,6 +226,7 @@ const canvas = document.getElementById('canvas');
 const ctx    = canvas.getContext('2d');
 
 let vx = 0, vy = 0, zoom = 1;
+let gridEnabled = false;
 
 function fitView() {
   zoom = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.88;
@@ -224,7 +243,6 @@ window.addEventListener('resize', resize);
 resize();
 
 // ── Render loop ──────────────────────────────────────────────────────────────
-let renderQueued = false;
 function scheduleRender() {
   if (renderQueued) return;
   renderQueued = true;
@@ -254,10 +272,10 @@ function doRender() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(offscreen, vx, vy, pw, ph);
 
-  // Pixel grid at high zoom
-  if (zoom >= 6) {
+  // Pixel grid: always on at high zoom (subtle), or whenever the user toggled it on
+  if (gridEnabled || zoom >= 6) {
     ctx.beginPath();
-    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.strokeStyle = gridEnabled ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.07)';
     ctx.lineWidth   = 0.5;
 
     const c0 = Math.max(0,  Math.ceil(-vx / zoom));
@@ -440,6 +458,11 @@ window.addEventListener('keydown', (e) => {
   if (k === 'e' || k === 'E') setTool('erase');
   if (k === 'i' || k === 'I') setTool('eye');
   if (k === 'f' || k === 'F') { fitView(); scheduleRender(); }
+  if (k === 'g' || k === 'G') {
+    gridEnabled = !gridEnabled;
+    document.getElementById('btn-grid').classList.toggle('active', gridEnabled);
+    scheduleRender();
+  }
   if (k === '+' || k === '=') zoomAt(window.innerWidth/2, window.innerHeight/2, 1.5);
   if (k === '-')              zoomAt(window.innerWidth/2, window.innerHeight/2, 1/1.5);
 });
@@ -457,6 +480,11 @@ document.getElementById('btn-eye').onclick   = () => setTool('eye');
 document.getElementById('btn-zi').onclick    = () => zoomAt(window.innerWidth/2, window.innerHeight/2, 1.5);
 document.getElementById('btn-zo').onclick    = () => zoomAt(window.innerWidth/2, window.innerHeight/2, 1/1.5);
 document.getElementById('btn-fit').onclick   = () => { fitView(); scheduleRender(); };
+document.getElementById('btn-grid').onclick  = () => {
+  gridEnabled = !gridEnabled;
+  document.getElementById('btn-grid').classList.toggle('active', gridEnabled);
+  scheduleRender();
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Color Picker  (circular hue ring + SV square)
