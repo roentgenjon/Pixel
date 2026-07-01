@@ -201,22 +201,6 @@ function reconcilePending() {
   }
 }
 
-function sendPaint(idx) {
-  const { r, g, b } = picker.rgb();
-  setPixel(idx, r, g, b, true);
-  flushOne(idx);
-  scheduleRender();
-  addPending({ type: 'paint', idx, r, g, b });
-  wsSendPaint(idx, r, g, b);
-}
-
-function sendErase(idx) {
-  clearPixel(idx);
-  flushOne(idx);
-  scheduleRender();
-  addPending({ type: 'erase', idx });
-  wsSendErase(idx);
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Main canvas & viewport
@@ -266,11 +250,11 @@ function doRender() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(offscreen, vx, vy, pw, ph);
 
-  // Pixel grid: always on at high zoom (subtle), or whenever the user toggled it on
-  if (gridEnabled || zoom >= 6) {
+  // Pixel grid: only when the user explicitly toggles it on
+  if (gridEnabled) {
     ctx.beginPath();
-    ctx.strokeStyle = gridEnabled ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.1)';
-    ctx.lineWidth   = 0.5;
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth   = 0.25;
 
     const c0 = Math.max(0,  Math.ceil(-vx / zoom));
     const c1 = Math.min(W,  Math.ceil((cw - vx) / zoom));
@@ -315,7 +299,8 @@ let panning   = false;
 let spaceDown = false;
 let panX0 = 0, panY0 = 0, pvx0 = 0, pvy0 = 0;
 let lastPx = -1, lastPy = -1;
-let brushSize = 1; // 1 | 4 | 8 — side length of the square brush, in pixels
+let brushSize = 1;    // 1 | 4 | 8 — side length of the square brush, in pixels
+let strokePainted = new Set(); // indices painted in this stroke — skip on re-visit
 
 function setTool(t) {
   tool = t;
@@ -351,18 +336,37 @@ function updateCursor() {
 }
 
 // ─── Apply tool at pixel (covers the whole brush footprint) ──────────────────
+// All cells in the brush block are flushed to the offscreen canvas in one
+// putImageData call and trigger one scheduleRender, regardless of brush size.
 function applyTool(px, py) {
+  const { r, g, b } = picker.rgb();
+  let x0 = W, y0 = H, x1 = 0, y1 = 0;
+
   for (const [x, y] of brushCells(px, py)) {
     const idx = pxToIndex(x, y);
     if (idx < 0) continue;
 
     if (tool === 'paint') {
-      if (pxOwner[idx] === 2) continue; // don't overwrite others
-      sendPaint(idx);
+      if (pxOwner[idx] === 2) continue;
+      if (strokePainted.has(idx)) continue;
+      strokePainted.add(idx);
+      setPixel(idx, r, g, b, true);
+      addPending({ type: 'paint', idx, r, g, b });
+      wsSendPaint(idx, r, g, b);
     } else if (tool === 'erase') {
-      if (pxOwner[idx] !== 1) continue; // only erase own
-      sendErase(idx);
-    }
+      if (pxOwner[idx] !== 1) continue;
+      clearPixel(idx);
+      addPending({ type: 'erase', idx });
+      wsSendErase(idx);
+    } else { continue; }
+
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+  }
+
+  if (x0 <= x1) {
+    offCtx.putImageData(imgData, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    scheduleRender();
   }
 }
 
@@ -409,6 +413,7 @@ wrap.addEventListener('mousedown', (e) => {
     }
 
     painting = true;
+    strokePainted.clear();
     lastPx = px; lastPy = py;
     applyTool(px, py);
   }
@@ -437,16 +442,26 @@ wrap.addEventListener('mousemove', (e) => {
   }
 });
 
-wrap.addEventListener('mouseup',    () => { painting = false; panning = false; updateCursor(); });
-wrap.addEventListener('mouseleave', () => { painting = false; panning = false; updateCursor(); });
+wrap.addEventListener('mouseup',    () => { painting = false; panning = false; strokePainted.clear(); updateCursor(); });
+wrap.addEventListener('mouseleave', () => { painting = false; panning = false; strokePainted.clear(); updateCursor(); });
 
 // Right-click = quick erase own pixel(s), respecting the current brush size
 wrap.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   const { px, py } = canvasToPx(e.clientX, e.clientY);
+  let x0 = W, y0 = H, x1 = 0, y1 = 0;
   for (const [x, y] of brushCells(px, py)) {
     const idx = pxToIndex(x, y);
-    if (idx >= 0 && pxOwner[idx] === 1) sendErase(idx);
+    if (idx < 0 || pxOwner[idx] !== 1) continue;
+    clearPixel(idx);
+    addPending({ type: 'erase', idx });
+    wsSendErase(idx);
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+  }
+  if (x0 <= x1) {
+    offCtx.putImageData(imgData, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    scheduleRender();
   }
 });
 
@@ -497,6 +512,7 @@ wrap.addEventListener('touchstart', (e) => {
 
     touchMode = 'paint';
     painting  = true;
+    strokePainted.clear();
     lastPx = px; lastPy = py;
     applyTool(px, py);
 
@@ -545,6 +561,7 @@ function touchEnd(e) {
   if (e.touches.length === 0) {
     painting = false;
     touchMode = null;
+    strokePainted.clear();
   } else if (touchMode === 'pan-zoom' && e.touches.length === 1) {
     // Dropped to one finger after a pinch — stop panning/zooming, don't start painting
     touchMode = null;
