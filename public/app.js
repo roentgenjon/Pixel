@@ -316,7 +316,7 @@ function setTool(t) {
 
 function setBrushSize(n) {
   brushSize = n;
-  [1, 4, 8].forEach(s => {
+  [1, 2].forEach(s => {
     document.getElementById(`btn-brush-${s}`).classList.toggle('active', s === n);
   });
 }
@@ -586,8 +586,7 @@ window.addEventListener('keydown', (e) => {
   if (k === 'e' || k === 'E') setTool('erase');
   if (k === 'i' || k === 'I') setTool('eye');
   if (k === '1') setBrushSize(1);
-  if (k === '2') setBrushSize(4);
-  if (k === '3') setBrushSize(8);
+  if (k === '2') setBrushSize(2);
   if (k === 'f' || k === 'F') { fitView(); scheduleRender(); }
   if (k === 'g' || k === 'G') {
     gridEnabled = !gridEnabled;
@@ -609,8 +608,7 @@ document.getElementById('btn-paint').onclick = () => setTool('paint');
 document.getElementById('btn-erase').onclick = () => setTool('erase');
 document.getElementById('btn-eye').onclick   = () => setTool('eye');
 document.getElementById('btn-brush-1').onclick = () => setBrushSize(1);
-document.getElementById('btn-brush-4').onclick = () => setBrushSize(4);
-document.getElementById('btn-brush-8').onclick = () => setBrushSize(8);
+document.getElementById('btn-brush-2').onclick = () => setBrushSize(2);
 document.getElementById('btn-zi').onclick    = () => zoomAt(window.innerWidth/2, window.innerHeight/2, 1.5);
 document.getElementById('btn-zo').onclick    = () => zoomAt(window.innerWidth/2, window.innerHeight/2, 1/1.5);
 document.getElementById('btn-fit').onclick   = () => { fitView(); scheduleRender(); };
