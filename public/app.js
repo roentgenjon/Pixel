@@ -250,11 +250,14 @@ function doRender() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(offscreen, vx, vy, pw, ph);
 
-  // Pixel grid: only when the user explicitly toggles it on
+  // Pixel grid: only when the user explicitly toggles it on.
+  // 'difference' composite with white = black on light, white on dark — always contrasting.
   if (gridEnabled) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'difference';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth   = 0.5;
     ctx.beginPath();
-    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-    ctx.lineWidth   = 0.25;
 
     const c0 = Math.max(0,  Math.ceil(-vx / zoom));
     const c1 = Math.min(W,  Math.ceil((cw - vx) / zoom));
@@ -270,6 +273,7 @@ function doRender() {
       ctx.lineTo(vx + c1 * zoom, vy + y * zoom);
     }
     ctx.stroke();
+    ctx.restore();
   }
 
   // Canvas border
