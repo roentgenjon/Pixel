@@ -250,9 +250,9 @@ function doRender() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(offscreen, vx, vy, pw, ph);
 
-  // Pixel grid: only when the user explicitly toggles it on.
+  // Pixel grid: only when toggled on AND zoom ≥ 700%.
   // 'difference' composite with white = black on light, white on dark — always contrasting.
-  if (gridEnabled) {
+  if (gridEnabled && zoom >= 7) {
     ctx.save();
     ctx.globalCompositeOperation = 'difference';
     ctx.strokeStyle = '#ffffff';
