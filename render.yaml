@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: pixel-canvas-roentgenjon
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    plan: free
+    envVars:
+      - key: MONGODB_URI
+        value: mongodb+srv://pixelapp:P1xelC4nvas2026!@pixel-canvas.wcdkipc.mongodb.net/pixelcanvas?retryWrites=true&w=majority
+      - key: NODE_ENV
+        value: production
