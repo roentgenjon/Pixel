@@ -1,125 +1,50 @@
 /**
  * PixelCanvas Durable Object
  *
- * Pixel state is kept in memory (sparse Map) and persisted via DO Alarms
- * at most once every 2 minutes — a single batched storage.put() call
- * regardless of how many pixels changed. Keeps writes far under the
- * free tier (≤ 21,600 writes/month at max alarm frequency vs. 1 M free).
+ * Pixel state is kept in memory (sparse Map) and persisted to MongoDB Atlas.
+ * Every paint/erase is written immediately — no write-limit like DO storage.
+ * On startup/wake, pixels are reloaded from MongoDB.
  *
- * Durable Objects can be evicted from memory (hibernated) between
- * WebSocket messages to save compute cost. Two things must survive
- * that eviction:
- *   1. Which userId belongs to which open WebSocket  → stored via
- *      ws.serializeAttachment() / state.getWebSockets(), not a plain Map.
- *   2. Pixel state                                    → reloaded from
- *      storage on first use after wake (ensureLoaded()).
- *
- * Binary WS protocol (same as Node.js server):
+ * Binary WS protocol (unchanged):
  *   Init  0x00 + count(4LE) + n×8 [index:4LE r g b isOwn]
  *   Paint 0x01 + index(4LE) + r + g + b + isOwn
  *   Erase 0x02 + index(4LE)
  */
 
+import { MongoClient } from 'mongodb';
+
 const WIDTH  = 1000;
 const HEIGHT = 1000;
 const TOTAL  = WIDTH * HEIGHT;
 
-// Alarm fires every 2 minutes while there are unsaved changes.
-const FLUSH_INTERVAL_MS = 120_000;
-
-// Max DO storage value size is 128 KiB (131,072 bytes).
-// 43 bytes per pixel (index + RGB + 36-byte ownerId) + 4-byte header →
-// 2,900 pixels/chunk ≈ 124,704 bytes, comfortably under the limit.
-const PIXELS_PER_CHUNK = 2_900;
-
 export class PixelCanvas {
   constructor(state, env) {
-    this.state   = state;
-    this.env     = env;
-    this.pixels  = new Map();   // pixelIndex → {r, g, b, ownerId}
-    this.loaded  = false;
-    this.dirty   = false;       // any unsaved changes since last flush?
+    this.state  = state;
+    this.env    = env;
+    this.pixels = new Map();   // pixelIndex → {r, g, b, ownerId}
+    this.loaded = false;
+    this._mongo = null;
+    this._coll  = null;
   }
 
-  // ── Load from storage ─────────────────────────────────────────────────────────
+  // Lazy MongoDB connection — recreated after DO hibernation
+  async _db() {
+    if (!this._coll) {
+      this._mongo = new MongoClient(this.env.MONGODB_URI);
+      await this._mongo.connect();
+      this._coll = this._mongo.db('pixelcanvas').collection('pixels');
+    }
+    return this._coll;
+  }
 
   async ensureLoaded() {
     if (this.loaded) return;
     this.loaded = true;
-
-    const stored = await this.state.storage.list({ prefix: 'chunk:' });
-    for (const [, buf] of stored) {
-      this._deserializeChunk(buf);
+    const coll = await this._db();
+    const docs = await coll.find({}).toArray();
+    for (const { _id, r, g, b, ownerId } of docs) {
+      this.pixels.set(_id, { r, g, b, ownerId });
     }
-  }
-
-  _deserializeChunk(buf) {
-    if (!(buf instanceof ArrayBuffer)) return;
-    const view  = new DataView(buf);
-    const u8    = new Uint8Array(buf);
-    const count = view.getUint32(0, true);
-    let off = 4;
-    for (let i = 0; i < count; i++) {
-      const idx     = view.getUint32(off,   true);
-      const r       = u8[off + 4];
-      const g       = u8[off + 5];
-      const b       = u8[off + 6];
-      const ownerId = String.fromCharCode(...u8.slice(off + 7, off + 43)).replace(/\0+$/, '');
-      this.pixels.set(idx, { r, g, b, ownerId });
-      off += 43;
-    }
-  }
-
-  // ── Alarm-based persistence (at most 1 write batch / 2 min) ──────────────────
-
-  markDirty() {
-    if (!this.dirty) {
-      this.dirty = true;
-      this.state.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
-    }
-  }
-
-  async alarm() {
-    await this.ensureLoaded(); // pixels may be unset if DO restarted before this fired
-    await this.flush();
-  }
-
-  async flush() {
-    if (!this.dirty) return;
-    this.dirty = false;
-
-    // Format per entry: index:4LE r:1 g:1 b:1 ownerId:36ASCII = 43 bytes
-    const entries   = [...this.pixels.entries()];
-    const numChunks = Math.ceil(entries.length / PIXELS_PER_CHUNK) || 1;
-    const puts      = {};
-
-    for (let c = 0; c < numChunks; c++) {
-      const slice = entries.slice(c * PIXELS_PER_CHUNK, (c + 1) * PIXELS_PER_CHUNK);
-      const buf   = new ArrayBuffer(4 + slice.length * 43);
-      const view  = new DataView(buf);
-      const u8    = new Uint8Array(buf);
-      view.setUint32(0, slice.length, true);
-      let off = 4;
-      for (const [idx, p] of slice) {
-        view.setUint32(off, idx, true);
-        u8[off + 4] = p.r;
-        u8[off + 5] = p.g;
-        u8[off + 6] = p.b;
-        const id = (p.ownerId || '').padEnd(36, '\0').slice(0, 36);
-        for (let j = 0; j < 36; j++) u8[off + 7 + j] = id.charCodeAt(j);
-        off += 43;
-      }
-      puts[`chunk:${c}`] = buf;
-    }
-
-    // Delete stale chunks beyond the current count (canvas shrank)
-    const existing = await this.state.storage.list({ prefix: 'chunk:' });
-    for (const key of existing.keys()) {
-      const n = Number(key.replace('chunk:', ''));
-      if (n >= numChunks) await this.state.storage.delete(key);
-    }
-
-    await this.state.storage.put(puts); // one batched call
   }
 
   // ── Incoming requests ─────────────────────────────────────────────────────────
@@ -141,8 +66,6 @@ export class PixelCanvas {
   }
 
   // ── WebSocket handlers ────────────────────────────────────────────────────────
-  // userId is attached directly to the WebSocket (survives hibernation) instead
-  // of a plain in-memory Map, which would be wiped on eviction.
 
   async webSocketMessage(ws, raw) {
     await this.ensureLoaded();
@@ -183,7 +106,13 @@ export class PixelCanvas {
       if (ex && ex.ownerId !== userId) return;
 
       this.pixels.set(idx, { r, g, b, ownerId: userId });
-      this.markDirty();
+
+      const coll = await this._db();
+      await coll.replaceOne(
+        { _id: idx },
+        { _id: idx, r, g, b, ownerId: userId },
+        { upsert: true }
+      );
 
       for (const ws2 of this.state.getWebSockets()) {
         const uid2 = ws2.deserializeAttachment()?.userId;
@@ -198,7 +127,9 @@ export class PixelCanvas {
       if (!ex || ex.ownerId !== userId) return;
 
       this.pixels.delete(idx);
-      this.markDirty();
+
+      const coll = await this._db();
+      await coll.deleteOne({ _id: idx });
 
       const pkt = this.buildErase(idx);
       for (const ws2 of this.state.getWebSockets()) {
@@ -208,7 +139,6 @@ export class PixelCanvas {
   }
 
   async webSocketClose() {
-    // state.getWebSockets() already excludes closed sockets — just broadcast new count
     this.broadcastJSON({ type: 'users', count: this.state.getWebSockets().length });
   }
 
