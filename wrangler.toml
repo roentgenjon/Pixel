@@ -1,7 +1,11 @@
 name = "pixel-canvas"
 main = "worker/index.js"
 compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
 account_id = "c4226f43b8ce6e4807c01155ea24a120"
+
+[vars]
+MONGODB_URI = "mongodb+srv://pixelapp:P1xelC4nvas2026!@pixel-canvas.wcdkipc.mongodb.net/pixelcanvas?retryWrites=true&w=majority"
 
 # Durable Object for real-time state + WebSocket broadcast
 [[durable_objects.bindings]]
@@ -13,4 +17,4 @@ tag = "v1"
 new_sqlite_classes = ["PixelCanvas"]
 
 [build]
-command = ""
+command = "npm install"
